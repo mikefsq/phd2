@@ -1118,7 +1118,41 @@ if(UNIX AND NOT APPLE)
       message(STATUS "Found ASICamera2 lib ${asiCamera2}")
       include_directories(${PHD_PROJECT_ROOT_DIR}/cameras/zwolibs/include)
       add_definitions(-DHAVE_ZWO_CAMERA=1)
-      list(APPEND PHD_LINK_EXTERNAL ${asiCamera2})
+
+      # Vendor workaround (remove once ZWO/QHY ship a fix): both libASICamera2.a
+      # and libqhyccd.a export a global helper isLeapYear(int) -- it should have
+      # been static -- so linking both trips the linker's multiple-definition
+      # check. In each library the symbol is defined in a single member and
+      # referenced by no other, so hiding it in one library resolves the clash
+      # with each keeping its own copy. Patch a build-dir copy (the source tree is
+      # read-only under the deb container) rather than the vendored archive.
+      #
+      # Guarded on the symbol actually being present, so that when the vendor drops
+      # it this announces itself as removable instead of silently no-oping: objcopy
+      # --localize-symbol succeeds whether or not the symbol exists.
+      find_program(NM NAMES nm)
+      find_program(OBJCOPY NAMES objcopy)
+      execute_process(COMMAND ${NM} ${asiCamera2} OUTPUT_VARIABLE _asi_syms
+                      ERROR_QUIET)
+      string(FIND "${_asi_syms}" "_Z10isLeapYeari" _asi_leap_pos)
+      if(_asi_leap_pos EQUAL -1)
+        message(STATUS "ZWO libASICamera2 no longer exports isLeapYear -- the "
+                       "objcopy workaround in thirdparty.cmake can be removed")
+        list(APPEND PHD_LINK_EXTERNAL ${asiCamera2})
+      elseif(OBJCOPY)
+        set(_asi_patched ${CMAKE_BINARY_DIR}/libASICamera2-patched.a)
+        execute_process(COMMAND ${CMAKE_COMMAND} -E copy ${asiCamera2} ${_asi_patched})
+        execute_process(COMMAND ${OBJCOPY} --localize-symbol=_Z10isLeapYeari ${_asi_patched}
+                        RESULT_VARIABLE _asi_localize_rc)
+        if(NOT _asi_localize_rc EQUAL 0)
+          message(FATAL_ERROR "objcopy failed to localize isLeapYear in libASICamera2.a")
+        endif()
+        list(APPEND PHD_LINK_EXTERNAL ${_asi_patched})
+      else()
+        message(WARNING "objcopy not found; linking ZWO camera lib unpatched "
+                        "(link will fail with a duplicate isLeapYear symbol)")
+        list(APPEND PHD_LINK_EXTERNAL ${asiCamera2})
+      endif()
 
       find_library(toupcam
              NAMES toupcam
