@@ -34,7 +34,7 @@ jobs:
       run: sudo chown -R "$(id -u):$(id -g)" dist
 
     - name: Upload package
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: phd2-debian-${{ matrix.suite }}-${{ matrix.arch }}
         path: dist/*.deb
