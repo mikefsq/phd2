@@ -59,7 +59,8 @@ jobs:
         msbuild wxWidgets\build\msw\wx_vc17.sln /p:Configuration=Debug /p:Platform=${{ matrix.platform }} /m /v:minimal
 
     - name: Install Inno Setup 5
-      run: choco install innosetup --version=5.6.1 --no-progress -y
+      # --allow-downgrade because the runner image ships a newer Inno Setup
+      run: choco install innosetup --version=5.6.1 --allow-downgrade --no-progress -y
 
     - name: Cache vcpkg binaries
       uses: actions/cache@v5
