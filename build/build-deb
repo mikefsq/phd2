@@ -33,8 +33,9 @@
 # silently acquire a dynamic libindi dependency; check_package() below fails the
 # build if one appears in Depends anyway.
 #
-# Supported releases are those carrying wxWidgets 3.2: Debian bookworm and trixie,
-# Ubuntu noble and resolute. Ubuntu jammy is out of scope -- it only ever had
+# Debian bookworm and trixie are what is built and tested. Any release carrying
+# wxWidgets 3.2 can be built with -t -- Ubuntu noble and resolute both work -- but
+# they are not part of the default set. Ubuntu jammy cannot: it only ever had
 # wx 3.0.
 #
 # OPENSOURCE_ONLY=1 matches debian/rules: the binary-only vendor camera SDKs are
@@ -49,22 +50,23 @@ set -o pipefail
 SCRIPT_DIR=$(cd "${BASH_SOURCE%/*}" && pwd)
 SRC_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 
-# Targets are DISTRO:SUITE:ARCH[,ARCH...]. Ubuntu is Debian-derived, so it needs no
-# special handling beyond the base image and the arches we care about there.
+# Targets are DISTRO:SUITE:ARCH[,ARCH...]. Other releases can be built by passing
+# -t; only these are built and tested by default. Ubuntu is Debian-derived and
+# needs no special handling beyond the base image name.
 targets="
     debian:trixie:amd64,arm64
     debian:bookworm:amd64,arm64
-    ubuntu:noble:amd64
-    ubuntu:resolute:amd64
 "
 outdir=$SRC_DIR/dist
 engine=
 jobs=$(nproc)
 keep_image=1
+ogma_sdk=
 
 usage () {
     cat <<EOF
-Usage: build-deb [-t TARGETS] [-o OUTDIR] [-e ENGINE] [-j JOBS] [-- CMAKE_ARGS...]
+Usage: build-deb [-t TARGETS] [-o OUTDIR] [-e ENGINE] [-j JOBS] [-s SDKDIR]
+                 [-- CMAKE_ARGS...]
 
 Options:
  -t TARGETS    space-separated DISTRO:SUITE:ARCH[,ARCH...] triples
@@ -72,6 +74,9 @@ Options:
  -o OUTDIR     directory for the .deb files    [default: $outdir]
  -e ENGINE     podman or docker                [default: autodetect]
  -j JOBS       parallel compile jobs           [default: $jobs]
+ -s SDKDIR     pre-populated OGMAcamSDK checkout, used instead of cloning it.
+               Only relevant with -DOPENSOURCE_ONLY=0; ignored if it does not
+               exist.
  -c            remove the builder images when done
  -h            show this help
 
@@ -81,12 +86,13 @@ Anything after -- is passed through to cmake, e.g.
 EOF
 }
 
-while getopts "t:o:e:j:ch" o; do
+while getopts "t:o:e:j:s:ch" o; do
     case "${o}" in
         t) targets=$OPTARG ;;
         o) outdir=$OPTARG ;;
         e) engine=$OPTARG ;;
         j) jobs=$OPTARG ;;
+        s) ogma_sdk=$OPTARG ;;
         c) keep_image= ;;
         h) usage; exit 0 ;;
         *) usage >&2; exit 1 ;;
@@ -211,9 +217,19 @@ EOF
 
     # The source is mounted read-only so a container build cannot write into the
     # working tree; everything lands in the container-local build directory.
+    # With OPENSOURCE_ONLY=0, thirdparty.cmake clones the OGMAcamSDK repository at
+    # configure time -- over 400MB, three quarters of which is git history it never
+    # reads. Pointing FetchContent at an existing checkout skips the clone entirely.
+    local sdk_mount=() sdk_arg=
+    if [[ $ogma_sdk && -d $ogma_sdk ]]; then
+        sdk_mount=(-v "$ogma_sdk":/ogmacamsdk:ro)
+        sdk_arg="-DFETCHCONTENT_SOURCE_DIR_OGMACAMSDK=/ogmacamsdk"
+    fi
+
     "$engine" run --rm --platform "$platform" \
         -v "$SRC_DIR":/src:ro \
         -v "$outdir":/out \
+        "${sdk_mount[@]}" \
         "$image" \
         bash -eux -c "
             mkdir -p /build && cd /build
@@ -223,6 +239,7 @@ EOF
                   -DUSE_SYSTEM_LIBUSB=1 \
                   -DUSE_SYSTEM_LIBINDI=0 \
                   -DOPENSOURCE_ONLY=1 \
+                  $sdk_arg \
                   ${cmake_extra_args[*]} \
                   /src
             make -j$jobs

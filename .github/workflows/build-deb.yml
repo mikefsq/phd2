@@ -10,25 +10,57 @@ on:
 
 jobs:
   build-deb:
-    name: ${{ matrix.suite }}/${{ matrix.arch }} 
+    name: ${{ matrix.distro }}/${{ matrix.suite }}/${{ matrix.arch }} ${{ matrix.flavour }}
     runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
+      # Each release needs its own package, and each is built twice: once DFSG-clean
+      # and once including the binary-only camera vendor SDKs, which is what the
+      # Windows installers ship. The two differ by a "+nonfree" version tag.
+      # Nothing is cached between jobs, but they run in parallel and a build is only
+      # a few minutes, so the cost is runner minutes rather than wall clock.
       matrix:
         include:
-        - suite: trixie
-          arch: amd64
-          runs-on: ubuntu-latest
-        - suite: trixie
-          arch: arm64
-          runs-on: ubuntu-24.04-arm
+        - { distro: debian, suite: trixie,   arch: amd64, runs-on: ubuntu-latest,    flavour: free }
+        - { distro: debian, suite: trixie,   arch: arm64, runs-on: ubuntu-24.04-arm, flavour: free }
+        - { distro: debian, suite: bookworm, arch: amd64, runs-on: ubuntu-latest,    flavour: free }
+        - { distro: debian, suite: bookworm, arch: arm64, runs-on: ubuntu-24.04-arm, flavour: free }
+        - { distro: debian, suite: trixie,   arch: amd64, runs-on: ubuntu-latest,    flavour: nonfree }
+        - { distro: debian, suite: trixie,   arch: arm64, runs-on: ubuntu-24.04-arm, flavour: nonfree }
+        - { distro: debian, suite: bookworm, arch: amd64, runs-on: ubuntu-latest,    flavour: nonfree }
+        - { distro: debian, suite: bookworm, arch: arm64, runs-on: ubuntu-24.04-arm, flavour: nonfree }
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v6
 
+    - name: Cache OGMA camera SDK
+      if: matrix.flavour == 'nonfree'
+      id: ogma-cache
+      uses: actions/cache@v5
+      with:
+        path: ~/ogmacamsdk
+        key: ogmacamsdk-${{ hashFiles('thirdparty/thirdparty.cmake') }}
+
+    - name: Fetch OGMA camera SDK
+      # Only the working tree is kept: the pin is a fixed SHA, so the history is
+      # three quarters of the download and none of it is ever read.
+      if: matrix.flavour == 'nonfree' && steps.ogma-cache.outputs.cache-hit != 'true'
+      run: |
+        sha=$(grep -A1 'OGMAcamSDK.git' thirdparty/thirdparty.cmake | awk '/GIT_TAG/ {print $2}')
+        test -n "$sha"
+        git clone --no-checkout https://github.com/OGMAvision/OGMAcamSDK.git ~/ogmacamsdk
+        git -C ~/ogmacamsdk checkout "$sha"
+        rm -rf ~/ogmacamsdk/.git
+
     - name: Build package
-      run: ./build/build-deb -e docker -t "debian:${{ matrix.suite }}:${{ matrix.arch }}"
+      # build-deb defaults to OPENSOURCE_ONLY=1; the passthrough args come last so
+      # the nonfree jobs override it.
+      run: |
+        ./build/build-deb -e docker \
+          -t "${{ matrix.distro }}:${{ matrix.suite }}:${{ matrix.arch }}" \
+          ${{ matrix.flavour == 'nonfree' && '-s ~/ogmacamsdk' || '' }} \
+          ${{ matrix.flavour == 'nonfree' && '-- -DOPENSOURCE_ONLY=0' || '' }}
 
     - name: Take ownership of the build products
       run: sudo chown -R "$(id -u):$(id -g)" dist
@@ -36,6 +68,6 @@ jobs:
     - name: Upload package
       uses: actions/upload-artifact@v6
       with:
-        name: phd2-debian-${{ matrix.suite }}-${{ matrix.arch }}
+        name: phd2-${{ matrix.distro }}-${{ matrix.suite }}-${{ matrix.arch }}-${{ matrix.flavour }}
         path: dist/*.deb
         if-no-files-found: error

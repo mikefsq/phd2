@@ -134,6 +134,15 @@ if(UNIX AND NOT APPLE)
     endif()
   endif()
 
+  # Flavour tag. A build that includes the binary-only camera vendor SDKs is a
+  # different package from a DFSG-clean one but would otherwise be named
+  # identically, so the two would overwrite each other. "+nonfree" sorts above the
+  # plain version, which is what we want: where both are offered, the one with more
+  # camera support wins.
+  if(NOT OPENSOURCE_ONLY)
+    set(debsuite "${debsuite}+nonfree")
+  endif()
+
   # package name is lowercase short name
   set(CPACK_DEBIAN_PACKAGE_NAME "phd2")
   # architecture use debian terminology
