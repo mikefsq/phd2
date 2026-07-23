@@ -1,0 +1,84 @@
+name: Windows Installers
+on:
+  push:
+    tags:
+    - 'v*'
+    # TEMPORARY - A push to this branch triggers the workflow
+    branches:
+    - 'win-packaging'
+  workflow_dispatch:
+
+env:
+  WX_VERSION: 3.2.6
+
+jobs:
+  build-win:
+    name: windows/${{ matrix.arch }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: x64
+          platform: x64
+          wx_lib_dir: vc_x64_lib
+          build_dir: tmp64
+        - arch: x86
+          platform: Win32
+          wx_lib_dir: vc_lib
+          build_dir: tmp
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Set up MSBuild
+      uses: microsoft/setup-msbuild@v3
+
+    - name: Cache wxWidgets
+      id: wx-cache
+      uses: actions/cache@v5
+      with:
+        path: wxWidgets
+        key: wx-${{ env.WX_VERSION }}-${{ matrix.arch }}-vc17
+
+    - name: Fetch wxWidgets
+      if: steps.wx-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        curl -fLo wx.zip \
+          "https://github.com/wxWidgets/wxWidgets/releases/download/v$WX_VERSION/wxWidgets-$WX_VERSION.zip"
+        mkdir wxWidgets
+        unzip -q wx.zip -d wxWidgets
+
+    - name: Build wxWidgets
+      if: steps.wx-cache.outputs.cache-hit != 'true'
+      shell: cmd
+      run: |
+        msbuild wxWidgets\build\msw\wx_vc17.sln /p:Configuration=Release /p:Platform=${{ matrix.platform }} /m /v:minimal
+        msbuild wxWidgets\build\msw\wx_vc17.sln /p:Configuration=Debug /p:Platform=${{ matrix.platform }} /m /v:minimal
+
+    - name: Install Inno Setup 5
+      run: choco install innosetup --version=5.6.1 --no-progress -y
+
+    - name: Cache vcpkg binaries
+      uses: actions/cache@v5
+      with:
+        path: ~\AppData\Local\vcpkg\archives
+        key: vcpkg-${{ matrix.arch }}-${{ hashFiles('thirdparty/thirdparty.cmake') }}
+
+    - name: Build installer
+      shell: bash
+      env:
+        WXWIN: ${{ github.workspace }}/wxWidgets
+      run: |
+        export MSYS2_ARG_CONV_EXCL='*'
+        unset NoDefaultCurrentDirectoryInExePath
+        build/build-win -a ${{ matrix.arch }}
+
+    - name: Upload installer
+      uses: actions/upload-artifact@v6
+      with:
+        name: phd2-windows-${{ matrix.arch }}-installer
+        path: ${{ matrix.build_dir }}/*installer.exe
+        if-no-files-found: error
