@@ -85,27 +85,86 @@ if(UNIX AND NOT APPLE)
   # Make Debian package
   set(CPACK_GENERATOR "DEB")
   set(CPACK_DEBIAN_PACKAGE_MAINTAINER "PHD2 team https://github.com/OpenPHDGuiding/phd2")
-  # get package information
-  if (CMAKE_SYSTEM_PROCESSOR MATCHES "^arm(.*)")
-    set(debarch "armhf")
-  else()
+
+  # Architecture: ask dpkg, which is authoritative. The previous heuristic keyed off
+  # CMAKE_SYSTEM_PROCESSOR and only matched "^arm", so aarch64 fell through to the
+  # pointer-size test and 64-bit ARM builds were labelled amd64.
+  find_program(DPKG_CMD dpkg)
+  if(DPKG_CMD)
+    execute_process(COMMAND ${DPKG_CMD} --print-architecture
+                    OUTPUT_VARIABLE debarch
+                    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm|aarch64)")
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-      set(debarch "amd64")
+      set(debarch "arm64")
     else()
-      set(debarch "i386")
+      set(debarch "armhf")
+    endif()
+  elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(debarch "amd64")
+  else()
+    set(debarch "i386")
+  endif()
+
+  # Suite tag. A binary built on one release is not installable on another: the
+  # glibc symbol versions differ, and Debian's 64-bit time_t transition renamed the
+  # runtime packages (bookworm ships libwxgtk3.2-1, trixie libwxgtk3.2-1t64, and
+  # neither suite carries the other's name). So each release needs its own package,
+  # tagged so that the tags sort in release order: "~deb12" < "~deb13" and
+  # "~ubuntu24.04" < "~ubuntu26.04". Codenames would not sort correctly -- forky is
+  # newer than trixie but sorts lower alphabetically.
+  set(debsuite "")
+  if(EXISTS /etc/os-release)
+    file(READ /etc/os-release _os_release)
+    string(REGEX MATCH "\nID=\"?([a-z]+)\"?" _ "\n${_os_release}")
+    set(_distro_id "${CMAKE_MATCH_1}")
+    if(_os_release MATCHES "VERSION_ID=\"?([0-9.]+)\"?")
+      set(_distro_ver "${CMAKE_MATCH_1}")
+      if(_distro_id STREQUAL "debian")
+        # Debian's VERSION_ID is the major release number: 12, 13
+        set(debsuite "~deb${_distro_ver}")
+      elseif(_distro_id)
+        # Ubuntu's is the full YY.MM, and "~ubuntu24.04" matches the convention
+        # already used by the PHD2 PPA
+        set(debsuite "~${_distro_id}${_distro_ver}")
+      endif()
+    elseif(_os_release MATCHES "VERSION_CODENAME=\"?([a-z]+)\"?")
+      # Debian testing/unstable carry no VERSION_ID
+      set(debsuite "~${CMAKE_MATCH_1}")
     endif()
   endif()
+
   # package name is lowercase short name
   set(CPACK_DEBIAN_PACKAGE_NAME "phd2")
   # architecture use debian terminology
   set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "${debarch}")
   # version control compatible version name < ppa name to allow further upgrade
-  set(CPACK_DEBIAN_PACKAGE_VERSION "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}.${cdate}.0${HOST_NAME}")
+  set(CPACK_DEBIAN_PACKAGE_VERSION "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}.${cdate}.0${debsuite}")
   # set version and arch compatible file name
   set(CPACK_PACKAGE_FILE_NAME "phd2_${CPACK_DEBIAN_PACKAGE_VERSION}_${debarch}")
-  # Ubuntu 14.04 compatible minimal dependency
-  set(CPACK_DEBIAN_PACKAGE_DEPENDS "libc6 (>= 2.17), libgcc1 (>= 1:4.1.1), libnova-0.14-0 | libnova-0.16-0, libstdc++6 (>= 4.2.1), libusb-1.0-0 (>= 2:1.0.8), libwxbase3.2-1t64 | libwxbase3.0-0 | libwxbase3.0-0v5 (>= 3.0.0), libwxgtk3.2-1t64 | libwxgtk3.0-0 | libwxgtk3.0-0v5 | libwxgtk3.0-gtk3-0v5 (>=3.0.0), libx11-6, zlib1g (>= 1:1.1.4)")
-  set(CPACK_DEBIAN_PACKAGE_SUGGESTS "indi-bin (>= 0.9.7)")
+
+  # Derive runtime dependencies from the built binary instead of hardcoding them.
+  # The correct package names vary by suite (the t64 rename above) and by build
+  # options (a bundled static INDI client adds libnova and zlib), so a fixed list
+  # cannot be right for every target. Deliberately leave CPACK_DEBIAN_PACKAGE_DEPENDS
+  # unset so dpkg-shlibdeps is the only source of Depends.
+  set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+  if(PHD_INSTALL_LIBS)
+    # OPENSOURCE_ONLY=0 ships binary-only vendor camera libraries inside the package.
+    # Point dpkg-shlibdeps at them so it treats them as private (shipped alongside
+    # the binary) rather than failing to find a providing package.
+    set(_phd_private_dirs "")
+    foreach(_lib IN LISTS PHD_INSTALL_LIBS)
+      get_filename_component(_dir "${_lib}" DIRECTORY)
+      list(APPEND _phd_private_dirs "${_dir}")
+    endforeach()
+    list(REMOVE_DUPLICATES _phd_private_dirs)
+    set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS_PRIVATE_DIRS "${_phd_private_dirs}")
+  endif()
+
+  # The INDI client is linked statically, so this is only needed to run a local
+  # server; PHD2 can equally connect to one on another machine.
+  set(CPACK_DEBIAN_PACKAGE_SUGGESTS "indi-bin")
   set(CPACK_DEBIAN_PACKAGE_DESCRIPTION "PHD2 auto-guiding software")
   # same section as many astronomy packages
   set(CPACK_DEBIAN_PACKAGE_SECTION "education")

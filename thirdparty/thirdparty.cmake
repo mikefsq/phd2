@@ -385,7 +385,13 @@ if(WIN32)
 else()
   find_package(Eigen3 REQUIRED)
   set(EIGEN_SRC ${EIGEN3_INCLUDE_DIR})
-  message(STATUS "Using system's Eigen3.")
+  if(NOT EIGEN_SRC)
+    # Modern Eigen3Config.cmake exports only the Eigen3::Eigen imported target and
+    # leaves EIGEN3_INCLUDE_DIR unset; pull the include dir from the target so the
+    # gaussian-process subproject can find <Eigen/Dense>.
+    get_target_property(EIGEN_SRC Eigen3::Eigen INTERFACE_INCLUDE_DIRECTORIES)
+  endif()
+  message(STATUS "Using system's Eigen3: ${EIGEN_SRC}")
 endif()
 
 #############################################
@@ -511,27 +517,42 @@ else()
       -DCMAKE_INSTALL_PREFIX=${CMAKE_BINARY_DIR}/libindi
       -DCMAKE_CXX_FLAGS=-D_CRT_SECURE_NO_WARNINGS
       -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
+    # GIT_TAG is a pinned commit, so there is never anything to update. Skipping
+    # the update step avoids a git fetch on every build and lets an already-cloned
+    # tree build offline.
+    UPDATE_COMMAND ""
   )
-  include_directories(${indi_INSTALL_DIR}/include)
+  # BEFORE, so the bundled headers take precedence over any libindi installed in
+  # /usr/include. Mixing system headers with the bundled static client would be an
+  # ABI mismatch, and system libindi headers are not necessarily the version pinned
+  # by GIT_TAG above.
+  include_directories(BEFORE ${indi_INSTALL_DIR}/include)
   if (WIN32)
     list(APPEND PHD_LINK_EXTERNAL ${indi_INSTALL_DIR}/lib/indiclient.lib)
   else()
     list(APPEND PHD_LINK_EXTERNAL ${indi_INSTALL_DIR}/lib/libindiclient.a)
+    # The statically-linked INDI client decompresses BLOBs with zlib (uncompress),
+    # so the final phd2 link must pull in zlib explicitly.
+    find_package(ZLIB REQUIRED)
+    list(APPEND PHD_LINK_EXTERNAL ${ZLIB_LIBRARIES})
     if(APPLE)
       # MacOS must use a static libnova to avoid introducing a homebrew or macports dylib dependency
       find_library(LIBNOVA REQUIRED NAMES libnova.a PATHS /usr/local/lib)
       list(APPEND PHD_LINK_EXTERNAL ${LIBNOVA})
     else()
       find_library(LIBNOVA REQUIRED NAMES nova)
-      list(APPEND PHD_LINK_EXTERNAL ${LIBNOVA} z)
+      list(APPEND PHD_LINK_EXTERNAL ${LIBNOVA})
     endif()
     ## Define LIBNOVA when building Indi from source.
     add_definitions("-DLIBNOVA")
   endif()
-  # adding indi as a dependency allows a developer to build phd2 in
-  # the IDE without explicitly building anything else first, but this
-  # slows down incremental development
-  # list(APPEND PHD_EXTERNAL_PROJECT_DEPENDENCIES indi)
+  # phd2 must not start compiling until the INDI client is installed. Without this
+  # edge, a parallel build races the ExternalProject: the -I above points at a
+  # directory that does not exist yet, the compiler silently drops it, and the INDI
+  # backends get built against whatever libindi happens to be in /usr/include (or
+  # fail outright if none is installed) while still linking the bundled static
+  # client. UPDATE_COMMAND "" above keeps this cheap for incremental builds.
+  list(APPEND PHD_EXTERNAL_PROJECT_DEPENDENCIES indi)
 endif()
 
 #############################################

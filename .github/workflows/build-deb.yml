@@ -1,0 +1,41 @@
+name: Debian Packages
+on:
+  push:
+    tags:
+    - 'v*'
+    # TEMPORARY - A push to this branch triggers the workflow
+    branches:
+    - 'deb-packaging'
+  workflow_dispatch:
+
+jobs:
+  build-deb:
+    name: ${{ matrix.suite }}/${{ matrix.arch }} 
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - suite: trixie
+          arch: amd64
+          runs-on: ubuntu-latest
+        - suite: trixie
+          arch: arm64
+          runs-on: ubuntu-24.04-arm
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Build package
+      run: ./build/build-deb -e docker -t "debian:${{ matrix.suite }}:${{ matrix.arch }}"
+
+    - name: Take ownership of the build products
+      run: sudo chown -R "$(id -u):$(id -g)" dist
+
+    - name: Upload package
+      uses: actions/upload-artifact@v4
+      with:
+        name: phd2-debian-${{ matrix.suite }}-${{ matrix.arch }}
+        path: dist/*.deb
+        if-no-files-found: error

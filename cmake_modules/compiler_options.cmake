@@ -46,6 +46,11 @@ option(USE_SYSTEM_LIBUSB "Enable this option here or in cmake call if you want t
 option(USE_SYSTEM_GTEST "Enable this option here or in cmake call if you want to use system's Gtest." OFF)
 option(USE_SYSTEM_LIBINDI "Enable this option here or in cmake call if you want to use system's libindi." OFF)
 
+# leaves out the binary-only camera vendor SDKs, which downstream packagers are not
+# able to redistribute (see debian/rules). Declared here so that it shows up in
+# cmake -LH and the GUI configuration tools alongside the options above.
+option(OPENSOURCE_ONLY "Enable this option here or in cmake call to build without the binary-only camera vendor libraries." OFF)
+
 # build type, by default to release (with optimisations)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   message(STATUS "Setting build type to 'Release' as none was specified.")

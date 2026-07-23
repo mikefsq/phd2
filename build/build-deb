@@ -1,0 +1,277 @@
+#!/usr/bin/env bash
+
+# build-deb - build PHD2 .deb packages for Debian and Ubuntu releases
+#
+# Each release needs its own package: the glibc symbol versions differ, and Debian's
+# 64-bit time_t transition renamed the runtime packages (bookworm ships
+# libwxgtk3.2-1, trixie libwxgtk3.2-1t64, and neither suite carries the other's
+# name). A package built on one release is therefore not installable on another, so
+# we build one .deb per release per architecture in a matching container.
+#
+# Building in a container is not just for foreign architectures: it also keeps
+# locally installed astronomy libraries out of the package. On a developer machine
+# with a hand-installed libindi or vendor camera SDK under /usr, CMake will prefer
+# those over the pinned/in-tree copies and the resulting .deb ships files that did
+# not come from the source tree.
+#
+# Foreign architectures run under qemu binfmt emulation, which is slow but needs no
+# second machine. One-time setup on a Debian or Ubuntu host:
+#
+#   sudo apt install podman qemu-user-static binfmt-support uidmap passt
+#
+# uidmap and passt are needed for rootless podman (podman 5.x uses pasta for
+# networking and fails with "could not find pasta" without it). The builds
+# themselves need no root. Verify emulation is registered with:
+#
+#   podman run --rm --platform linux/amd64 debian:trixie-slim uname -m
+#
+# USE_SYSTEM_LIBINDI=0 compiles the INDI client from source and links it
+# statically. No Debian or Ubuntu release ships libindi >= 2.0, which is the
+# minimum the PHD2 INDI backends require, and a static client also decouples the
+# package from whatever indiserver the user happens to have installed. It is
+# passed explicitly rather than relying on the default so that the package cannot
+# silently acquire a dynamic libindi dependency; check_package() below fails the
+# build if one appears in Depends anyway.
+#
+# Supported releases are those carrying wxWidgets 3.2: Debian bookworm and trixie,
+# Ubuntu noble and resolute. Ubuntu jammy is out of scope -- it only ever had
+# wx 3.0.
+#
+# OPENSOURCE_ONLY=1 matches debian/rules: the binary-only vendor camera SDKs are
+# not distributable under the DFSG, and on Linux those cameras are reached through
+# INDI drivers anyway. Note that OPENSOURCE_ONLY has no option() default in the
+# CMake files -- when unset it is falsy and the vendor SDKs are built in -- so it
+# has to be passed explicitly. Override with "-- -DOPENSOURCE_ONLY=0"; the
+# passthrough args come last, so the later -D wins.
+
+set -o pipefail
+
+SCRIPT_DIR=$(cd "${BASH_SOURCE%/*}" && pwd)
+SRC_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
+
+# Targets are DISTRO:SUITE:ARCH[,ARCH...]. Ubuntu is Debian-derived, so it needs no
+# special handling beyond the base image and the arches we care about there.
+targets="
+    debian:trixie:amd64,arm64
+    debian:bookworm:amd64,arm64
+    ubuntu:noble:amd64
+    ubuntu:resolute:amd64
+"
+outdir=$SRC_DIR/dist
+engine=
+jobs=$(nproc)
+keep_image=1
+
+usage () {
+    cat <<EOF
+Usage: build-deb [-t TARGETS] [-o OUTDIR] [-e ENGINE] [-j JOBS] [-- CMAKE_ARGS...]
+
+Options:
+ -t TARGETS    space-separated DISTRO:SUITE:ARCH[,ARCH...] triples
+               [default: $(echo $targets)]
+ -o OUTDIR     directory for the .deb files    [default: $outdir]
+ -e ENGINE     podman or docker                [default: autodetect]
+ -j JOBS       parallel compile jobs           [default: $jobs]
+ -c            remove the builder images when done
+ -h            show this help
+
+Anything after -- is passed through to cmake, e.g.
+
+  build-deb -t debian:trixie:arm64 -- -DOPENSOURCE_ONLY=0
+EOF
+}
+
+while getopts "t:o:e:j:ch" o; do
+    case "${o}" in
+        t) targets=$OPTARG ;;
+        o) outdir=$OPTARG ;;
+        e) engine=$OPTARG ;;
+        j) jobs=$OPTARG ;;
+        c) keep_image= ;;
+        h) usage; exit 0 ;;
+        *) usage >&2; exit 1 ;;
+    esac
+done
+shift $((OPTIND-1))
+cmake_extra_args=("$@")
+
+if [[ -z $engine ]]; then
+    for e in podman docker; do
+        if command -v "$e" >/dev/null 2>&1; then
+            engine=$e
+            break
+        fi
+    done
+fi
+if [[ -z $engine ]]; then
+    echo "build-deb: no container engine found; install podman (or docker)" >&2
+    exit 1
+fi
+
+host_arch=$(dpkg --print-architecture)
+
+# Build deps. Deliberately not libindi-dev: no Debian or Ubuntu release ships
+# >= 2.0, which is what the PHD2 INDI backends need, so the client is built from
+# source by thirdparty.cmake instead.
+build_deps="
+    build-essential
+    ca-certificates
+    cmake
+    dpkg-dev
+    file
+    gettext
+    git
+    libcfitsio-dev
+    libcurl4-gnutls-dev
+    libeigen3-dev
+    libgtest-dev
+    libnova-dev
+    libopencv-dev
+    libudev-dev
+    libusb-1.0-0-dev
+    libv4l-dev
+    libwxgtk3.2-dev
+    libx11-dev
+    pkg-config
+    zlib1g-dev
+"
+
+check_package () (
+    # Sanity check the built package before we hand it over.
+    #
+    # The INDI client must be statically linked: if a libindi runtime package
+    # shows up in Depends, thirdparty.cmake found a system libindi and the
+    # package is no longer self-contained. Likewise an empty Depends means
+    # dpkg-shlibdeps did not run, which would produce a package that installs
+    # anywhere and runs nowhere.
+    deb=$1
+
+    depends=$(dpkg-deb -f "$deb" Depends)
+    arch=$(dpkg-deb -f "$deb" Architecture)
+
+    if [[ -z $depends ]]; then
+        echo "$deb: Depends is empty -- dpkg-shlibdeps did not run" >&2
+        return 1
+    fi
+    if [[ $depends == *libindi* ]]; then
+        echo "$deb: links a system libindi ($depends)" >&2
+        return 1
+    fi
+    if [[ $arch != "$2" ]]; then
+        echo "$deb: Architecture is $arch, expected $2" >&2
+        return 1
+    fi
+    echo "  Architecture: $arch"
+    echo "  Depends: $depends"
+)
+
+build_one () {
+    local distro=$1 suite=$2 arch=$3
+    local image=phd2-deb:$distro-$suite-$arch
+    local platform=linux/$arch
+    local base
+
+    # Debian publishes -slim variants; Ubuntu's images are already minimal.
+    if [[ $distro == debian ]]; then
+        base=debian:$suite-slim
+    else
+        base=$distro:$suite
+    fi
+
+    echo "=== $distro/$suite/$arch ==="
+
+    if [[ $arch != "$host_arch" ]] && [[ ! -e /proc/sys/fs/binfmt_misc/qemu-${arch/amd64/x86_64} ]]; then
+        echo "note: $arch is foreign to this $host_arch host and no qemu binfmt handler" >&2
+        echo "      is registered; install qemu-user-static and binfmt-support" >&2
+    fi
+
+    # Empty build context: the image only installs packages, and passing the source
+    # tree would upload hundreds of MB (the vendor camera libraries) to the engine
+    # for nothing. The source is bind-mounted into the build container instead.
+    local ctx
+    ctx=$(mktemp -d) || return 1
+
+    # $build_deps is written one package per line for readability; collapse it to a
+    # single line or the newlines split the RUN into bogus Containerfile instructions.
+    local deps
+    deps=$(echo $build_deps)
+
+    "$engine" build --platform "$platform" -t "$image" -f - "$ctx" <<EOF
+FROM $base
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends $deps \
+ && rm -rf /var/lib/apt/lists/*
+EOF
+    local build_rc=$?
+    rmdir "$ctx"
+    [[ $build_rc -eq 0 ]] || return 1
+
+    mkdir -p "$outdir"
+
+    # The source is mounted read-only so a container build cannot write into the
+    # working tree; everything lands in the container-local build directory.
+    "$engine" run --rm --platform "$platform" \
+        -v "$SRC_DIR":/src:ro \
+        -v "$outdir":/out \
+        "$image" \
+        bash -eux -c "
+            mkdir -p /build && cd /build
+            cmake -DCMAKE_BUILD_TYPE=Release \
+                  -DCMAKE_INSTALL_PREFIX=/usr \
+                  -DUSE_SYSTEM_GTEST=1 \
+                  -DUSE_SYSTEM_LIBUSB=1 \
+                  -DUSE_SYSTEM_LIBINDI=0 \
+                  -DOPENSOURCE_ONLY=1 \
+                  ${cmake_extra_args[*]} \
+                  /src
+            make -j$jobs
+            cpack -G DEB
+            cp phd2_*.deb /out/
+        " || return 1
+
+    local deb
+    deb=$(ls -t "$outdir"/phd2_*_"$arch".deb 2>/dev/null | head -1)
+    if [[ -z $deb ]]; then
+        echo "build-deb: no package produced for $suite/$arch" >&2
+        return 1
+    fi
+    check_package "$deb" "$arch" || return 1
+    echo "  -> $deb"
+}
+
+rc=0
+failed=()
+built=()
+for target in $targets; do
+    IFS=: read -r distro suite arch_list <<<"$target"
+    if [[ -z $distro || -z $suite || -z $arch_list ]]; then
+        echo "build-deb: malformed target '$target', want DISTRO:SUITE:ARCH[,ARCH...]" >&2
+        rc=1
+        continue
+    fi
+    for arch in ${arch_list//,/ }; do
+        if build_one "$distro" "$suite" "$arch"; then
+            built+=("$distro/$suite/$arch")
+        else
+            failed+=("$distro/$suite/$arch")
+            rc=1
+        fi
+    done
+done
+
+if [[ -z $keep_image ]]; then
+    for target in $targets; do
+        IFS=: read -r distro suite arch_list <<<"$target"
+        for arch in ${arch_list//,/ }; do
+            "$engine" rmi "phd2-deb:$distro-$suite-$arch" >/dev/null 2>&1
+        done
+    done
+fi
+
+echo "build-deb: built ${#built[@]} package(s) in $outdir"
+
+if (( ${#failed[@]} )); then
+    echo "build-deb: failed: ${failed[*]}" >&2
+fi
+exit $rc
