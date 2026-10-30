@@ -1360,6 +1360,41 @@ std::vector<DeviceAddress> discoverDevices(const std::string& deviceType, int ti
     return out;
 }
 
+void logServerIdentity(const DeviceAddress& addr, int timeoutMs)
+{
+    std::ostringstream root;
+    root << "http://" << urlHost(addr.host) << ":" << addr.port;
+    std::ostringstream dev;
+    dev << "/api/v1/" << addr.deviceType << "/" << addr.deviceNumber << "/";
+    const std::string q = "?ClientID=1&ClientTransactionID=1";
+    const std::string paths[] = { "/management/v1/description", dev.str() + "driverinfo", dev.str() + "driverversion" };
+
+    CURL *curl = curl_easy_init();
+    if (!curl)
+        return;
+    for (const std::string& path : paths)
+    {
+        std::string body;
+        curl_easy_reset(curl);
+        curl_easy_setopt(curl, CURLOPT_URL, (root.str() + path + q).c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeToString);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long) timeoutMs);
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L); // runs on connect worker threads; see httpGet
+        CURLcode rc = curl_easy_perform(curl);
+        long status = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+        if (body.size() > 300)
+            body = body.substr(0, 300) + "...";
+        logDiag("server identity: GET " + root.str() + path + " -> " +
+                (rc == CURLE_OK ? std::to_string(status) + " " + (body.empty() ? "(empty body)" : body)
+                                : std::string(curl_easy_strerror(rc))));
+        if (rc != CURLE_OK)
+            break; // unreachable server: one line is enough, don't wait out the timeout twice more
+    }
+    curl_easy_cleanup(curl);
+}
+
 std::vector<ConfiguredDevice> configuredDevices(const std::string& host, int port, int timeoutMs,
                                                 const std::atomic<bool> *cancel)
 {
