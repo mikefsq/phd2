@@ -194,6 +194,13 @@ namespace
         return out;
     }
 
+    // alpacaBool returns "True" or "False" to match C#’s bool.ToString()
+    // Some clients do not accept lower case true or false
+    static const char *alpacaBool(bool v)
+    {
+        return v ? "True" : "False";
+    }
+
     size_t writeToString(char *ptr, size_t size, size_t nmemb, void *userdata)
     {
         auto *s = static_cast<std::string *>(userdata);
@@ -564,7 +571,7 @@ Error Device::put(const std::string& mbr, const std::map<std::string, std::strin
 
 Error Device::setConnected(bool v)
 {
-    return put("connected", { { "Connected", v ? "true" : "false" } });
+    return put("connected", { { "Connected", alpacaBool(v) } });
 }
 Error Device::name(std::string *out)
 {
@@ -770,7 +777,7 @@ Error Camera::isPulseGuiding(bool *out)
 
 Error Camera::startExposure(double seconds, bool light)
 {
-    return put("startexposure", { { "Duration", std::to_string(seconds) }, { "Light", light ? "true" : "false" } });
+     return put("startexposure", { { "Duration", std::to_string(seconds) }, { "Light", alpacaBool(light) } });
 }
 Error Camera::imageReady(bool *out)
 {
@@ -832,7 +839,7 @@ Error Camera::canSetCCDTemperature(bool *out)
 }
 Error Camera::setCoolerOn(bool v)
 {
-    return put("cooleron", { { "CoolerOn", v ? "true" : "false" } });
+    return put("cooleron", { { "CoolerOn", alpacaBool(v) } });
 }
 Error Camera::coolerOn(bool *out)
 {
