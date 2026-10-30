@@ -194,9 +194,9 @@ namespace
         return out;
     }
 
-    // alpacaBool returns "True" or "False" to match C#’s bool.ToString()
-    // Some clients do not accept lower case true or false
-    static const char *alpacaBool(bool v)
+    // alpacaBool returns "True" or "False" to match C#'s bool.ToString()
+    // Some devices do not accept lower case true or false
+    const char *alpacaBool(bool v)
     {
         return v ? "True" : "False";
     }
@@ -777,7 +777,7 @@ Error Camera::isPulseGuiding(bool *out)
 
 Error Camera::startExposure(double seconds, bool light)
 {
-     return put("startexposure", { { "Duration", std::to_string(seconds) }, { "Light", alpacaBool(light) } });
+    return put("startexposure", { { "Duration", std::to_string(seconds) }, { "Light", alpacaBool(light) } });
 }
 Error Camera::imageReady(bool *out)
 {

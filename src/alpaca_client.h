@@ -168,7 +168,7 @@ std::vector<DeviceAddress> discoverDevices(const std::string& deviceType, int ti
                                            const std::vector<std::string>& extraHosts = {}, int mgmtTimeoutMs = 2000,
                                            const std::atomic<bool> *cancel = nullptr);
 
-// logServerIdentity writes the client description, driverinfo and driverversion
+// logServerIdentity writes the server description, driverinfo and driverversion
 // to the diagnostic sink. This is called before connecting the device to improve logging
 void logServerIdentity(const DeviceAddress& addr, int timeoutMs = 3000);
 

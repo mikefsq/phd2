@@ -279,9 +279,9 @@ bool CameraAlpaca::ConnectInBgEntry(RunInBg *bg, std::shared_ptr<alpaca::Camera>
         bg->SetErrorMsg(_("Could not connect to the Alpaca camera. See the debug log for details."));
         return true;
     };
-    
+
     alpaca::logServerIdentity(addr);
-    
+
     alpaca::Error err;
     if ((err = cam->setConnected(true)))
         return fail("setconnected", err);
