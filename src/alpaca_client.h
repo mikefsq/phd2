@@ -169,7 +169,7 @@ std::vector<DeviceAddress> discoverDevices(const std::string& deviceType, int ti
                                            const std::atomic<bool> *cancel = nullptr);
 
 // logServerIdentity writes the server description, driverinfo and driverversion
-// to the diagnostic sink. This is called before connecting the device to improve logging
+// to the diagnostic sink when verbose logging is on. Called before connecting the device.
 void logServerIdentity(const DeviceAddress& addr, int timeoutMs = 3000);
 
 // Device is the common ASCOM device surface plus typed low-level GET/PUT helpers.

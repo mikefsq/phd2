@@ -1362,6 +1362,8 @@ std::vector<DeviceAddress> discoverDevices(const std::string& deviceType, int ti
 
 void logServerIdentity(const DeviceAddress& addr, int timeoutMs)
 {
+    if (!verbose())
+        return; // extra round-trips only when user ask for verbose log
     std::ostringstream root;
     root << "http://" << urlHost(addr.host) << ":" << addr.port;
     std::ostringstream dev;
@@ -1385,7 +1387,12 @@ void logServerIdentity(const DeviceAddress& addr, int timeoutMs)
         long status = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
         if (body.size() > 300)
-            body = body.substr(0, 300) + "...";
+        {
+            size_t n = 300;
+            while (n > 0 && (static_cast<unsigned char>(body[n]) & 0xC0) == 0x80)
+                --n; // no cut mid UTF-8 char
+            body = body.substr(0, n) + "...";
+        }
         logDiag("server identity: GET " + root.str() + path + " -> " +
                 (rc == CURLE_OK ? std::to_string(status) + " " + (body.empty() ? "(empty body)" : body)
                                 : std::string(curl_easy_strerror(rc))));
